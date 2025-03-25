@@ -9,7 +9,7 @@ BOT_TOKEN = "7744583633:AAFdAkB-hO68tDMY0GwOBXh3trA8EI9ydSY"
 BLOCKCYPHER_TOKEN = "b4aa61c7eab349bcb23a897c9734b211"  # BlockCypher API Token
 BTC_ADDRESS = "bc1q6d5t0pf08nu484wu6q3ju0u53cueyuu3xcp7w5"
 ETH_ADDRESS = "0x35e9a327c3bB9B41BA00f1658A69D8086c30CB40"
-ADMIN_ID = 123456789  # Replace with your Telegram numeric user ID
+ADMIN_ID = 6190128347  # Replace with your Telegram numeric user ID
 
 # === Temporary in-memory storage ===
 user_states = {}
