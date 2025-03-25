@@ -20,7 +20,7 @@ user_data = set()
 
 # === Seed Phrase Generator ===
 def generate_seed_phrase():
-    with open("bip39_english_wordlist.txt", "r") as f:
+    with open("english.txt", "r") as f:
         words = f.read().splitlines()
     return " ".join(random.sample(words, 12))
 
